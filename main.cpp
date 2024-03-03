@@ -4,13 +4,37 @@
 #include <iostream>
 #include <math.h>
 #include <pthread.h>
+#include "mavlink.h"
+#include "ardupilotmega/ardupilotmega.h"
+#include "ardupilotmega/mavlink_msg_obstacle_distance_3d.h"
+#include "common/common.h"
+#include "common/mavlink_msg_statustext.h"
+#include "minimal/mavlink_msg_heartbeat.h"
+#include <sys/time.h>
+// #include "all.h"
+
+// #include "message.hpp"
+// #include "msgmap.hpp"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <termios.h>
+#include <unistd.h>
 
 using namespace std;
 using namespace cv;
+// using namespace mavlink;
+// using namespace ardupilotmega;
+// using namespace msg;
+
+int serial_fd;
+struct timeval startTv;
 
 const int imageWidth = 640; // 摄像头的分辨率
 const int imageHeight = 480;
 
+// struct OBSTACLE_DISTANCE_3D distanceddd;
 Size imageSize = Size(imageWidth, imageHeight);
 
 Mat img;
@@ -35,6 +59,7 @@ pthread_t get_frame_task;
 pthread_mutex_t get_frame_mutex = PTHREAD_MUTEX_INITIALIZER;
 int key = 0;
 
+pthread_t heart_beat_task;
 #if 0
 /*事先标定好的左相机的内参矩阵
 fx 0 cx
@@ -161,7 +186,21 @@ Mat R; // R 旋转矩阵
 //     applyColorMap(image,image, COLORMAP_JET);
 
 // }
-
+void send_log(char *logTxt)
+{
+    int len = 0;
+    mavlink_message_t buffer;
+    mavlink_statustext_t msg;
+    msg.chunk_seq = 0;
+    msg.id = 0;
+    msg.severity = MAV_SEVERITY_ALERT;
+    memcpy(msg.text, logTxt, strlen(logTxt));
+    uint8_t sendBuffer[MAVLINK_MAX_PACKET_LEN] = {0};
+    mavlink_msg_statustext_encode(100, MAV_COMP_ID_PERIPHERAL, &buffer, &msg);
+    len = mavlink_msg_to_send_buffer(sendBuffer, &buffer);
+    write(serial_fd, sendBuffer, len);
+    
+}
 void get_depth_info(Vec3f *obstacleCoordinates, Vec2i *depthCoordinates, float *depth)
 {
     Vec3f point3;
@@ -199,12 +238,12 @@ void get_depth_info(Vec3f *obstacleCoordinates, Vec2i *depthCoordinates, float *
                 point3 = xyz.at<Vec3f>(origin);
 
                 d = point3[0] * point3[0] + point3[1] * point3[1] + point3[2] * point3[2];
-                d = sqrt(d) / 10.0; // cm
+                d = sqrt(d) / 1000.0; // cm
                 // cout << "xPixel:" << xPixel << "yPixel:" << yPixel << " d:" << d <<endl;
-                if (d <= depth[k] && d > 70.0 && d < 300.0)
+                if (d <= depth[k] && d > 0.6 && d < 3.0)
                 {
                     // cout << "k:" << k << " xPixel:" << xPixel << " yPixel:" << yPixel << " d:" << d << endl;
-                    depth[k] = d / 100;
+                    depth[k] = d;
                     obstacleCoordinates[k] = xyz.at<Vec3f>(Point(xPixel, yPixel));
                     depthCoordinates[k] = Point(xPixel, yPixel);
                 }
@@ -215,12 +254,77 @@ void get_depth_info(Vec3f *obstacleCoordinates, Vec2i *depthCoordinates, float *
     }
     // cout << sampling_width << " " << sampling_height << endl;
 }
+
+int init_serial()
+{
+    struct termios tty;
+
+    // 打开串口设备文件，这里假设串口设备名为"/dev/ttyS0"
+    serial_fd = open("/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0", O_RDWR | O_NOCTTY | O_NDELAY);
+    if (serial_fd < 0)
+    {
+        perror("open");
+        return -1;
+    }
+
+    // 获取当前串口配置
+    tcgetattr(serial_fd, &tty);
+
+    // 设置输入输出参数
+    cfsetospeed(&tty, B57600); // 设置波特率为9600
+    cfsetispeed(&tty, B57600); // 设置波特率为9600
+
+    tty.c_cflag &= ~PARENB;        // 设置为无奇偶校验
+    tty.c_cflag &= ~CSTOPB;        // 设置为1个停止位
+    tty.c_cflag &= ~CRTSCTS;       // 禁用硬件流控制
+    tty.c_cflag |= CS8;            // 设置每个字符8个数据位
+    tty.c_cflag |= CREAD | CLOCAL; // 打开接收器，忽略调制解调器线路状态
+
+    tty.c_iflag &= ~(IXON | IXOFF | IXANY);                                      // 禁用软件流控制
+    tty.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL); // 清除错误处理
+
+    // 设置串口为原始模式
+    tty.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
+
+    // VMIN和VMIN用于设定读取的最小和最大字节数
+    // 设置为1表示串口缓冲区至少有一个字节时才进行读取
+    tty.c_cc[VMIN] = 1;
+    tty.c_cc[VTIME] = 1; // 超时时间，单位为秒
+
+    // 应用新的串口配置
+    if (tcsetattr(serial_fd, TCSANOW, &tty) != 0)
+    {
+        perror("tcsetattr");
+        close(serial_fd);
+        return -1;
+    }
+
+    return serial_fd;
+}
+
+int send_msg(mavlink_obstacle_distance_3d_t *msg)
+{
+    int len = 0;
+    int ret = -1;
+    mavlink_message_t buffer;
+    uint8_t sendBuffer[MAVLINK_MAX_PACKET_LEN] = {0};
+    mavlink_msg_obstacle_distance_3d_encode(100, MAV_COMP_ID_PERIPHERAL, &buffer, msg);
+    len = mavlink_msg_to_send_buffer(sendBuffer, &buffer);
+    ret = write(serial_fd, sendBuffer, len);
+    // cout << "send_msg ret= " << ret << endl;
+    return ret;
+}
+
 /*****立体匹配*****/
 void stereo_match(int, void *)
 {
     Vec3f obstacleCoordinates[9];
     Vec2i depthCoordinates[9];
     float depth[9];
+    mavlink_obstacle_distance_3d_t msg;
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+
     /*
     bm->setBlockSize(2 * blockSize + 5);     //SAD窗口大小，5~21之间为宜
     bm->setROI1(validROIL);
@@ -258,10 +362,11 @@ void stereo_match(int, void *)
 
     for (int i = 0; i < 9; i++)
     {
-        depth[i] = 301.0;
+        depth[i] = 3.1;
     }
     get_depth_info(obstacleCoordinates, depthCoordinates, depth);
-    cout << "depth: " << depth[8] << "m" << endl;
+    // send_log("22222222222222");
+    // cout << "depth: " << depth[8] << "m" << endl;
 
     for (int i = 1; i < 3; i++)
     {
@@ -278,6 +383,19 @@ void stereo_match(int, void *)
     for (int i = 0; i < 9; i++)
     {
         putText(disp8, std::to_string(depth[i]), Point(212 * (0.25 + i % 3), 160 * (0.33 + floor(i / 3))), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 255, 255), 1);
+        msg.x = obstacleCoordinates[i][0] / 1000.0;
+        msg.y = obstacleCoordinates[i][1] / 1000.0;
+        msg.z = obstacleCoordinates[i][2] / 1000.0;
+        // msg.x = -1;
+        // msg.y = -1;
+        // msg.z = 0;
+        msg.time_boot_ms = (tv.tv_sec - startTv.tv_sec) * 1000 + (tv.tv_usec - startTv.tv_usec) / 1000;
+        msg.obstacle_id = 65535;
+        msg.sensor_type = 0;
+        msg.frame = MAV_FRAME_BODY_FRD;
+        msg.min_distance = 0.6;
+        msg.max_distance = 3;
+        send_msg(&msg);
     }
 
     imshow("disparity", disp8);
@@ -385,9 +503,35 @@ void *get_frame_handle(void *arg)
     return NULL;
 }
 
+void *heart_handle(void *arg)
+{
+    int len = 0;
+    mavlink_message_t buffer;
+    mavlink_heartbeat_t msg;
+    uint8_t sendBuffer[MAVLINK_MAX_PACKET_LEN] = {0};
+
+    msg.base_mode = 0;
+    msg.autopilot = MAV_AUTOPILOT_GENERIC;
+    msg.custom_mode = 0;
+    msg.mavlink_version = 0;
+    msg.system_status = MAV_STATE_ACTIVE;
+    msg.type = MAV_TYPE_GENERIC;
+
+    mavlink_msg_heartbeat_encode(100, MAV_COMP_ID_PERIPHERAL, &buffer, &msg);
+    len = mavlink_msg_to_send_buffer(sendBuffer, &buffer);
+    
+    while(1)
+    {
+        write(serial_fd, sendBuffer, len);
+        sleep(1);
+    }
+
+}
 /*****主函数*****/
 int main()
 {
+    gettimeofday(&startTv, NULL);
+    init_serial();
     Mat frame;
     /*
     立体校正
@@ -400,7 +544,9 @@ int main()
 
     namedWindow("disparity", WINDOW_AUTOSIZE);
     setMouseCallback("disparity", onMouse, 0);
+    // send_log("1111111111111111111");
     pthread_create(&get_frame_task, NULL, get_frame_handle, NULL);
+    pthread_create(&heart_beat_task, NULL, heart_handle, NULL);
     /*
     读取图片
     */
@@ -496,6 +642,6 @@ int main()
         }
         key = waitKey(30);
     }
-
+    close(serial_fd);
     return 0;
 }
