@@ -13,6 +13,9 @@ LIB := -ldl -lpthread -lopencv_world
 INCLUDES := -I$(ROOTDIR)include
 INCLUDES += -I$(ROOTDIR)include/opencv4/opencv2
 INCLUDES += -I$(ROOTDIR)include/opencv4
+INCLUDES += -I$(ROOTDIR)include/mavlink/v2.0
+INCLUDES += -I$(ROOTDIR)include/mavlink/v2.0/all
+INCLUDES += -I$(ROOTDIR)include/mavlink/v2.0/ardupilotmega
 # 列出所有的源文件
 SRCS = $(ROOTDIR)/main.cpp
 

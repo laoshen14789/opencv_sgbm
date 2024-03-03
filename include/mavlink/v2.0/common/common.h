@@ -10,7 +10,7 @@
     #error Wrong include order: MAVLINK_COMMON.H MUST NOT BE DIRECTLY USED. Include mavlink.h from the same directory instead or set ALL AND EVERY defines from MAVLINK.H manually accordingly, including the #define MAVLINK_H call.
 #endif
 
-#define MAVLINK_COMMON_XML_HASH 5270982482986015093
+#define MAVLINK_COMMON_XML_HASH -4264070936056713377
 
 #ifdef __cplusplus
 extern "C" {
@@ -2358,6 +2358,19 @@ typedef enum MISSION_STATE
    MISSION_STATE_COMPLETE=5, /* Mission has executed all mission items. | */
    MISSION_STATE_ENUM_END=6, /*  | */
 } MISSION_STATE;
+#endif
+
+/** @brief 
+	Possible safety switch states.
+       */
+#ifndef HAVE_ENUM_SAFETY_SWITCH_STATE
+#define HAVE_ENUM_SAFETY_SWITCH_STATE
+typedef enum SAFETY_SWITCH_STATE
+{
+   SAFETY_SWITCH_STATE_SAFE=0, /* Safety switch is engaged and vehicle should be safe to approach. | */
+   SAFETY_SWITCH_STATE_DANGEROUS=1, /* Safety switch is NOT engaged and motors, propellers and other actuators should be considered active. | */
+   SAFETY_SWITCH_STATE_ENUM_END=2, /*  | */
+} SAFETY_SWITCH_STATE;
 #endif
 
 // MAVLINK VERSION
